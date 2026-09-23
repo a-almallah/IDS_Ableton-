@@ -17,25 +17,38 @@ def clean_dataset(df):
 
 def main():
     print("Loading dataset...")
-    # For demonstration, we will create a dummy subset if no CSV is found.
-    # Replace 'cic_ids_subset.csv' with your actual dataset file.
-    try:
-        df = pd.read_csv('cic_ids_subset.csv')
-    except FileNotFoundError:
-        print("Dataset 'cic_ids_subset.csv' not found. Generating dummy data for pipeline validation...")
-        np.random.seed(42)
-        dummy_data = {
-            'Flow Duration': np.random.rand(1000) * 1000,
-            'Flow IAT Mean': np.random.rand(1000) * 100,
-            'Total Fwd Packets': np.random.randint(1, 100, 1000),
-            'Total Backward Packets': np.random.randint(1, 100, 1000),
-            'Fwd Packet Length Max': np.random.randint(1, 1500, 1000),
-            'Label': np.random.choice(['BENIGN', 'DDoS', 'PortScan'], 1000)
-        }
-        df = pd.DataFrame(dummy_data)
-        # Inject some NaNs and Infs to test the cleaning logic
-        df.loc[10:15, 'Flow Duration'] = np.inf
-        df.loc[20:25, 'Total Fwd Packets'] = np.nan
+    import glob
+    import os
+    
+    dataset_dir = 'Dataset'
+    if not os.path.exists(dataset_dir):
+        raise FileNotFoundError(f"Dataset directory '{dataset_dir}' not found. Please run the aws s3 sync command first.")
+        
+    # Specifically target the processed CSV files
+    csv_files = glob.glob(f'{dataset_dir}/**/*.csv', recursive=True)
+    if not csv_files:
+        raise FileNotFoundError(f"No CSV files found in '{dataset_dir}'.")
+        
+    print(f"Found {len(csv_files)} CSV files. Loading data...")
+    
+    # We will sample from each file to build a representative subset without running out of memory
+    dfs = []
+    for f in csv_files:
+        print(f"Sampling from {os.path.basename(f)}...")
+        try:
+            # CIC-IDS-2018 CSVs can be huge, we read a sample (e.g., 100k rows)
+            df_part = pd.read_csv(f, nrows=100000) 
+            dfs.append(df_part)
+        except Exception as e:
+            print(f"Could not read {f}: {e}")
+            
+    if not dfs:
+        raise ValueError("Could not load any data from the CSV files.")
+        
+    df = pd.concat(dfs, ignore_index=True)
+    
+    # Standardize column names (CIC-IDS datasets often have leading/trailing spaces)
+    df.columns = df.columns.str.strip()
 
     print(f"Original dataset shape: {df.shape}")
     
