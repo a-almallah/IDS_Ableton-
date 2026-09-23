@@ -28,7 +28,23 @@ def main():
     dataset_dir = 'Dataset/CSE-CIC-IDS2018'
     
     if not os.path.exists(dataset_dir):
-        raise FileNotFoundError(f"Dataset directory '{dataset_dir}' not found.")
+        print(f"Dataset directory '{dataset_dir}' not found. Downloading automatically...")
+        import subprocess
+        import os
+        
+        os.makedirs('Dataset', exist_ok=True)
+        zip_path = "dataset.zip"
+        
+        print("Downloading from Mendeley (this might take a while)...")
+        subprocess.run(["curl", "-L", "https://data.mendeley.com/public-api/zip/29hdbdzx2r/download/1", "-o", zip_path], check=True)
+        
+        print("Unzipping...")
+        subprocess.run(["unzip", "-q", zip_path, "-d", "Dataset"], check=True)
+        
+        print("Cleaning up zip file...")
+        os.remove(zip_path)
+        
+        print("Download complete!")
         
     all_csvs = glob.glob(f'{dataset_dir}/*.csv')
     matched_csvs = [f for f in all_csvs if args.attack.lower() in os.path.basename(f).lower() or args.attack.lower().replace(" ", "") in os.path.basename(f).lower().replace("-", "")]
