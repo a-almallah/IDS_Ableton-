@@ -4,6 +4,7 @@ import joblib
 import argparse
 import glob
 import os
+import random
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
@@ -19,8 +20,9 @@ def clean_dataset(df):
 
 def main():
     parser = argparse.ArgumentParser(description="Train IDS model on specific attack types.")
-    parser.add_argument("--attack", type=str, default="Bot", help="Keyword to filter attack types (e.g., DoS, DDoS, BruteForce, Bot)")
+    parser.add_argument("--attack", type=str, default="Bot", help="Keyword to filter attack types")
     parser.add_argument("--model-name", type=str, default="model.pkl", help="Output model filename")
+    parser.add_argument("--mix-normal", type=int, default=100000, help="Number of Benign samples to mix from OTHER files to prevent overfitting to a single day's background traffic.")
     args = parser.parse_args()
 
     dataset_dir = 'Dataset/CSE-CIC-IDS2018'
@@ -28,46 +30,62 @@ def main():
     if not os.path.exists(dataset_dir):
         raise FileNotFoundError(f"Dataset directory '{dataset_dir}' not found.")
         
-    # Find CSVs matching the attack keyword (case-insensitive)
     all_csvs = glob.glob(f'{dataset_dir}/*.csv')
     matched_csvs = [f for f in all_csvs if args.attack.lower() in os.path.basename(f).lower() or args.attack.lower().replace(" ", "") in os.path.basename(f).lower().replace("-", "")]
     
     if not matched_csvs:
-        print(f"Available CSVs: {[os.path.basename(f) for f in all_csvs]}")
         raise ValueError(f"No CSV files found matching attack keyword: {args.attack}")
         
-    print(f"Loading data for attack category: '{args.attack}'")
+    print(f"Loading attack data for: '{args.attack}'")
     
     dfs = []
+    # 1. Load the requested attack data
     for f in matched_csvs:
         print(f" - Reading {os.path.basename(f)}...")
         try:
-            # We sample to keep it 'simple' and fast, but increase nrows if you want more data
             df_part = pd.read_csv(f, nrows=200000) 
             dfs.append(df_part)
         except Exception as e:
             print(f"Error reading {f}: {e}")
             
+    # 2. Mix in normal traffic from OTHER files to make it harder/more realistic
+    if args.mix_normal > 0:
+        other_csvs = [f for f in all_csvs if f not in matched_csvs]
+        if other_csvs:
+            print(f"\nMixing in ~{args.mix_normal} Benign (normal) samples from other files to increase difficulty and prevent background-overfitting...")
+            samples_per_file = args.mix_normal // len(other_csvs)
+            
+            for f in other_csvs:
+                try:
+                    # Read a chunk, filter only Benign
+                    df_other = pd.read_csv(f, nrows=samples_per_file * 3) # Read extra to ensure enough Benign
+                    df_other.columns = df_other.columns.str.strip()
+                    if 'Label' in df_other.columns:
+                        df_benign = df_other[df_other['Label'].str.lower() == 'benign']
+                        if not df_benign.empty:
+                            # Take the required sample
+                            df_benign = df_benign.sample(n=min(samples_per_file, len(df_benign)), random_state=42)
+                            dfs.append(df_benign)
+                except Exception as e:
+                    pass
+
     if not dfs:
         raise ValueError("No data could be loaded.")
         
     df = pd.concat(dfs, ignore_index=True)
     df.columns = df.columns.str.strip()
     
-    print(f"Raw shape: {df.shape}")
+    print(f"\nRaw shape after mixing: {df.shape}")
     print("Cleaning Infinity and NaN values...")
     df = clean_dataset(df)
-    print(f"Cleaned shape: {df.shape}")
 
-    # Binary classification: Benign vs Anomaly (or specific attack)
-    # We will just use the exact labels present
     print("\nLabel distribution:")
     print(df['Label'].value_counts())
 
     X = df.drop('Label', axis=1)
     y = df['Label']
     
-    # We drop time-based features as requested in the previous steps for a robust model
+    # Drop time-based features
     time_features = [col for col in X.columns if 'Duration' in col or 'IAT' in col]
     print(f"\nDropping time-based features to avoid overfitting: {time_features}")
     X = X.drop(columns=time_features, errors='ignore')
@@ -82,17 +100,15 @@ def main():
     clf = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
     clf.fit(X_train_scaled, y_train)
     
-    # Save test set for test.py to use (so we don't leak data)
     test_data = X_test.copy()
     test_data['Label'] = y_test
     test_data.to_csv(f'test_data_{args.attack}.csv', index=False)
     
-    # Export Model
     joblib.dump(clf, args.model_name)
     joblib.dump(scaler, 'scaler.pkl')
     joblib.dump(list(X.columns), 'model_features.pkl')
     print(f"\nExported {args.model_name}, scaler.pkl, and model_features.pkl successfully.")
-    print(f"Saved test set to test_data_{args.attack}.csv for evaluation.")
+    print(f"Saved diverse test set to test_data_{args.attack}.csv for evaluation.")
 
 if __name__ == "__main__":
     main()
